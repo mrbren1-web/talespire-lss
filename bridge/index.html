@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>LSS × TaleSpire</title>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --bg2: #17181d;
+    --border: #2a2e37;
+    --text: #e6e8ec;
+    --text-dim: #9aa1ad;
+    --accent: #3f8cff;
+    --ok: #2fbf71;
+    --warn: #e0a63f;
+    --danger: #e05f5f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+  }
+  #bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    min-height: 38px;
+    user-select: none;
+  }
+  #brand { font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  #brand .lss { color: var(--accent); }
+  .pill {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .pill.on { color: #0d0d0f; background: var(--ok); border-color: var(--ok); font-weight: 600; }
+  .pill.warn { color: #0d0d0f; background: var(--warn); border-color: var(--warn); font-weight: 600; }
+  .spacer { flex: 1 1 auto; }
+  #gear {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 9px;
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+  }
+  #gear:hover { background: #23262e; }
+  #settings {
+    display: none;
+    position: absolute;
+    top: 42px;
+    right: 8px;
+    width: 260px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    z-index: 20;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  }
+  #settings.open { display: block; }
+  #settings h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .4px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+  .row input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .row .lbl { flex: 1; }
+  .hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; line-height: 1.4; }
+  #sheet {
+    flex: 1 1 auto;
+    width: 100%;
+    border: none;
+    display: block;
+    background: #fff;
+  }
+  #toast {
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    background: rgba(23,24,29,.95);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    max-width: 90%;
+    font-size: 13px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
+    z-index: 30;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="brand"><span class="lss">LSS</span> → TaleSpire</span>
+    <span id="ts-pill" class="pill">TS: ожидание…</span>
+    <span id="sheet-pill" class="pill">Лист: —</span>
+    <span class="spacer"></span>
+    <button id="gear" title="Настройки" aria-label="Настройки">⚙</button>
+  </div>
+
+  <div id="settings">
+    <h3>Настройки</h3>
+    <label class="row"><input type="checkbox" id="opt-dice"><span class="lbl">Кубы в лоток TaleSpire</span></label>
+    <label class="row"><input type="checkbox" id="opt-toast"><span class="lbl">Уведомление о результате</span></label>
+    <label class="row"><input type="checkbox" id="opt-chat"><span class="lbl">Дублировать результат в чат</span></label>
+    <div class="hint">Клик по полю листа кладёт кубы в лоток TaleSpire (нажмите «Бросок» в игре) и показывает итог броска.</div>
+  </div>
+
+  <iframe id="sheet" title="Long Story Short"></iframe>
+  <div id="toast"></div>
+
+<script type="module">
+/* =========================================================================
+ * LSS × TaleSpire — bridge (self-contained)
+ *
+ * Архитектура:
+ *   TaleSpire (Symbiote, entryPoint = этот файл на вашем домене)
+ *     └── этот мост встраивает лист LSS через iframe
+ *           └── лист шлёт postMessage-события (lss:roll)
+ *                 └── мост бросает кубы через TS.dice.putDiceInTray(...)
+ *
+ * ВАЖНО: страница должна быть размещена на домене из белого списка LSS.
+ * Подробности — в README.md рядом с этим модом.
+ * ========================================================================= */
+
+/* ---------- 1. LSS SDK (vendored из @longstoryshort/vtt-sdk 0.9.0, MIT) ---------- */
+var MARKER = "__lssSheetSdk";
+var VERSION = 2;
+function wrapEnvelope(event) { return { __lssSheetSdk: VERSION, event }; }
+function readEnvelope(data) {
+  if (typeof data === "object" && data !== null) {
+    const record = data;
+    if (record[MARKER] === VERSION && "event" in record) return record.event;
+  }
+  return null;
+}
+function createBridgeSheetSource(options) {
+  const host = options.host ?? (typeof window !== "undefined" ? window : undefined);
+  const targetOrigin = options.targetOrigin ?? "*";
+  const { iframe, allowedOrigins } = options;
+  const handlers = new Set();
+  const lastStateEvents = new Map();
+  const STATE_TYPES = ["lss:manifest", "dnd:health", "lss:group-status"];
+  const listener = (event) => {
+    if (event.source !== iframe.contentWindow) return;
+    if (allowedOrigins && !allowedOrigins.includes(event.origin)) return;
+    const sheetEvent = readEnvelope(event.data);
+    if (!sheetEvent) return;
+    if (STATE_TYPES.includes(sheetEvent.type)) lastStateEvents.set(sheetEvent.type, sheetEvent);
+    handlers.forEach((h) => h(sheetEvent));
+  };
+  if (host) host.addEventListener("message", listener);
+  const subscribe = (handler) => {
+    handlers.add(handler);
+    lastStateEvents.forEach((event) => handler(event));
+    return () => { handlers.delete(handler); };
+  };
+  return {
+    onRoll(handler) {
+      return subscribe((event) => { if (event.type === "lss:roll") handler(event.payload); });
+    },
+    onEvent(handler) { return subscribe(handler); },
+    send(event) {
+      if (!iframe.contentWindow) return false;
+      iframe.contentWindow.postMessage(wrapEnvelope(event), targetOrigin);
+      return true;
+    },
+    dispose() {
+      handlers.clear();
+      lastStateEvents.clear();
+      if (host) host.removeEventListener("message", listener);
+    }
+  };
+}
+function formatRollMessage(payload) {
+  let crit = "";
+  if (payload.isCrit) {
+    if (payload.critKind === "success") crit = " \u{1F4A5}";
+    else if (payload.critKind === "failure") crit = " \u{1F480}";
+  }
+  return `\u{1F3B2} ${payload.characterName}: ${payload.title} \u2014 ${payload.total}${crit}`;
+}
+
+/* ---------- 2. Константы и конфигурация ---------- */
+const SHEET_ORIGIN = "https://longstoryshort.app";
+const SHEET_LIST_URL = "https://longstoryshort.app/iframe/characters/list/";
+const TS_SIDES = new Set([4, 6, 8, 10, 12, 20, 100]);
+const MAX_DICE = 40; // предохранитель: не кладём в лоток безумное число кубов
+
+const SETTINGS_KEY = "lss-talespire-settings";
+const DEFAULT_SETTINGS = { dice: true, toast: true, chat: false };
+
+function loadSettings() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    return { ...DEFAULT_SETTINGS, ...raw };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+let settings = loadSettings();
+
+/* ---------- 3. Доступ к API TaleSpire ---------- */
+function getTS() {
+  return window.TS || window["com.bouncyrock.talespire"] || null;
+}
+function waitForTS(timeoutMs = 15000) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      const ts = getTS();
+      if (ts && ts.dice && ts.symbiote) return resolve(ts);
+      if (Date.now() - start > timeoutMs) return resolve(null);
+      setTimeout(check, 100);
+    };
+    check();
+  });
+}
+
+/* ---------- 4. Конвертация формулы LSS → кубы TaleSpire ---------- */
+function normalizeFormula(formula) {
+  if (!formula) return "";
+  return String(formula)
+    .replace(/[кКD]/g, "d")  // кириллическая «к» и латинская «D» → «d»
+    .replace(/d%/g, "d100"); // процентная кость
+}
+
+function parseDiceTerms(formula) {
+  const norm = normalizeFormula(formula);
+  const terms = [];
+  const re = /(\d*)d(\d+)/gi;
+  let m;
+  while ((m = re.exec(norm)) !== null) {
+    const count = m[1] === "" ? 1 : parseInt(m[1], 10);
+    const sides = parseInt(m[2], 10);
+    if (count > 0 && TS_SIDES.has(sides)) terms.push({ count, sides });
+  }
+  return terms;
+}
+
+function extractStaticModifier(formula) {
+  const norm = normalizeFormula(formula);
+  let mod = 0;
+  // плоские +/-N, за которыми НЕ следует кость (напр. "+5", но не "+1d4")
+  const re = /([+-])\s*(\d+)(?!\s*d\s*\d)/g;
+  let m;
+  while ((m = re.exec(norm)) !== null) {
+    mod += (m[1] === "-" ? -1 : 1) * parseInt(m[2], 10);
+  }
+  return mod;
+}
+
+/**
+ * Превращает lss:roll в дескрипторы кубов для TS.dice.putDiceInTray.
+ * Возвращает null, если физические кубы подобрать не удалось
+ * (тогда итог показывается только уведомлением).
+ */
+function rollToDescriptors(roll) {
+  const norm = normalizeFormula(roll.formula);
+  const mod = extractStaticModifier(roll.formula);
+  const modStr = mod === 0 ? "" : (mod > 0 ? "+" + mod : String(mod));
+  const label = roll.title || "Бросок";
+  const adv = /kh1/i.test(norm);
+  const dis = /kl1/i.test(norm);
+
+  // Преимущество/помеха → две d20 в лоток, игрок берёт большую/меньшую.
+  if (adv || dis) {
+    const name = label + (adv ? " (преимущество)" : " (помеха)");
+    return [
+      { name, roll: "1d20" + modStr },
+      { name, roll: "1d20" + modStr }
+    ];
+  }
+
+  const terms = parseDiceTerms(roll.formula);
+  if (terms.length === 0) return null;
+
+  const totalDice = terms.reduce((s, t) => s + t.count, 0);
+  if (totalDice > MAX_DICE) return null;
+
+  const rollStr = terms.map((t) => `${t.count}d${t.sides}`).join("+") + modStr;
+  return [{ name: label, roll: rollStr }];
+}
+
+/* ---------- 5. UI-помощники ---------- */
+const $ = (id) => document.getElementById(id);
+const tsPill = $("ts-pill");
+const sheetPill = $("sheet-pill");
+const settingsPanel = $("settings");
+const toastEl = $("toast");
+let toastTimer = null;
+
+function setStatus(kind, text) {
+  const pill = kind === "ts" ? tsPill : sheetPill;
+  pill.textContent = text;
+}
+function markTs(ok) {
+  if (ok) { tsPill.textContent = "TS: готов"; tsPill.className = "pill on"; }
+  else { tsPill.textContent = "TS: вне игры"; tsPill.className = "pill warn"; }
+}
+function markSheet(ok) {
+  if (ok) { sheetPill.textContent = "Лист: подключён"; sheetPill.className = "pill on"; }
+  else { sheetPill.textContent = "Лист: —"; sheetPill.className = "pill"; }
+}
+function showLocalToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+}
+
+/* ---------- 6. Настройки ---------- */
+function bindSettings() {
+  const dice = $("opt-dice"), toast = $("opt-toast"), chat = $("opt-chat");
+  dice.checked = settings.dice;
+  toast.checked = settings.toast;
+  chat.checked = settings.chat;
+  const save = () => {
+    settings = { dice: dice.checked, toast: toast.checked, chat: chat.checked };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+  };
+  [dice, toast, chat].forEach((el) => el.addEventListener("change", save));
+  $("gear").addEventListener("click", () => settingsPanel.classList.toggle("open"));
+  document.addEventListener("click", (e) => {
+    if (!settingsPanel.contains(e.target) && e.target.id !== "gear") {
+      settingsPanel.classList.remove("open");
+    }
+  });
+}
+
+/* ---------- 7. Основной поток ---------- */
+function resolveSheetUrl() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("id")) return `${SHEET_ORIGIN}/iframe/characters/digital/${q.get("id")}/`;
+  if (q.get("url")) return q.get("url");
+  return SHEET_LIST_URL;
+}
+
+async function main() {
+  bindSettings();
+
+  const iframe = $("sheet");
+  iframe.setAttribute("sandbox",
+    "allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals");
+  iframe.setAttribute("allow", "clipboard-write");
+  iframe.src = resolveSheetUrl();
+
+  const source = createBridgeSheetSource({
+    iframe,
+    allowedOrigins: [SHEET_ORIGIN]
+  });
+
+  // Любое событие из листа = лист загрузился и подключился.
+  source.onEvent(() => markSheet(true));
+
+  const tsPromise = waitForTS();
+  tsPromise.then((ts) => markTs(!!ts));
+
+  source.onRoll(async (roll) => {
+    const msg = formatRollMessage(roll);
+    console.log("[lss:roll]", roll);
+
+    const ts = await tsPromise;
+    const descriptors = rollToDescriptors(roll);
+
+    // Физические кубы в лоток TaleSpire.
+    let put = false;
+    if (ts && settings.dice && descriptors) {
+      try {
+        await ts.dice.putDiceInTray(descriptors, false);
+        put = true;
+      } catch (e) {
+        console.warn("[lss:roll] putDiceInTray не удался:", e);
+      }
+    }
+
+    if (ts) {
+      if (settings.toast) {
+        try { ts.symbiote.sendNotification(roll.title || "Бросок", msg); } catch (e) {
+          console.warn("sendNotification failed", e);
+        }
+      }
+      if (settings.chat) {
+        try { ts.chat.send(msg, "board"); } catch (e) {
+          console.warn("chat.send failed", e);
+        }
+      }
+    } else {
+      // Работаем в обычном браузере (для теста моста) — просто покажем тост.
+      showLocalToast(msg + (put ? "" : " (кубы недоступны — запустите в TaleSpire)"));
+    }
+
+    if (ts && settings.dice && !put) {
+      // Кубы не удалось положить — хотя бы покажем итог.
+      if (!settings.toast && !settings.chat) {
+        try { ts.symbiote.sendNotification(roll.title || "Бросок", msg); } catch {}
+      }
+    }
+  });
+}
+
+main();
+</script>
+</body>
+</html>
